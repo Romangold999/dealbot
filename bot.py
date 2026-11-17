@@ -156,12 +156,13 @@ async def _process_batch(bot: Bot, details_worker: DetailsWorker, query: str, pr
             continue
         sent_links.add(link)
 
-        previous = db.observe_price(link, float(price))
+        # Search-card prices are provisional. Use only previously recorded
+        # observations to decide whether a history check is worth verifying;
+        # the current sample is stored only after the product page confirms it.
+        previous = db.price_history(link, days=3)
         initial_peer = evaluate_peer_deal(product, market_pool)
         initial_history = history_anomaly(float(price), previous, HISTORY_THRESHOLD)
         if not (initial_peer and initial_peer["score"] >= MIN_DEAL_SCORE) and not initial_history:
-            continue
-        if not db.should_send_alert(link, float(price)):
             continue
 
         # Re-open the exact product page. The current card price, not oldPrice,
@@ -184,6 +185,10 @@ async def _process_batch(bot: Bot, details_worker: DetailsWorker, query: str, pr
         product["price_value"] = current_price
         product["characteristics"] = details.get("characteristics") or {}
         db.cache_offers([product], query)
+
+        # Only now record the price: the exact product page confirmed both
+        # identity and a live price close to the search result.
+        previous = db.observe_price(link, current_price)
 
         # Recalculate the anomaly using the verified live price.
         peer_deal = evaluate_peer_deal(product, market_pool)
