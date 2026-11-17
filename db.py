@@ -170,7 +170,7 @@ def price_history(link: str, days: int = 3) -> list[float]:
 
 
 def observe_price(link: str, price: float):
-    """Return earlier 3-day samples, then append the new observation."""
+    """Append a verified price observation and return earlier 3-day samples."""
     now = datetime.now(timezone.utc)
     cutoff = (now - timedelta(days=3)).isoformat()
     with connect() as db:
@@ -214,6 +214,12 @@ def add_directions(queries: list[str], parent_query: str = "", depth: int = 1) -
     if not cleaned:
         return 0
     with connect() as db:
+        parent = db.execute(
+            "SELECT depth FROM search_directions WHERE query=?",
+            (parent_query,),
+        ).fetchone() if parent_query else None
+        child_depth = int(parent["depth"]) + 1 if parent else max(0, int(depth))
+        cleaned = [(q, parent_q, child_depth, created) for q, parent_q, _, created in cleaned]
         before = db.total_changes
         db.executemany(
             "INSERT OR IGNORE INTO search_directions(query, parent_query, depth, created_at) "
