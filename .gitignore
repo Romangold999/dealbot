@@ -1,0 +1,13 @@
+.env
+.venv/
+__pycache__/
+*.pyc
+deals.db
+vendor/Marketplace-Parser/output/*.json
+vendor/Marketplace-Parser/logs/*.log
+vendor/Marketplace-Parser/browser/
+
+*.log
+browser-cache/
+deals.db-wal
+deals.db-shm
