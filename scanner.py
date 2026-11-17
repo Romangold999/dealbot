@@ -131,7 +131,7 @@ def _derive_directions(products, parent_query: str, max_new: int = 10):
     return unique[:max_new]
 
 
-async def random_walk(on_batch, workers: int = 2, limit: int = 12):
+async def random_walk(on_batch, workers: int = 2, limit: int = 12, should_stop=None):
     """Run continuously until cancelled; process every completed query immediately.
 
     on_batch(query, products, error) may be async and should return a reward in 0..5.
@@ -156,8 +156,10 @@ async def random_walk(on_batch, workers: int = 2, limit: int = 12):
     active = 0
     try:
         while True:
+            if should_stop and should_stop() and active == 0:
+                break
             # Keep all workers busy, but never enqueue an unbounded backlog.
-            while active < workers:
+            while active < workers and not (should_stop and should_stop()):
                 query = db.next_direction()
                 if not query:
                     await asyncio.sleep(2)
@@ -166,6 +168,8 @@ async def random_walk(on_batch, workers: int = 2, limit: int = 12):
                 active += 1
                 log.info("Random walk -> '%s'", query)
 
+            if active == 0 and should_stop and should_stop():
+                break
             while True:
                 try:
                     worker_id, query, direction_id, products, error = results.get_nowait()
