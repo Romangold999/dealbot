@@ -165,7 +165,12 @@ async def random_walk(on_batch, workers: int = 2, limit: int = 12):
                 active += 1
                 log.info("Random walk -> '%s'", query)
 
-            worker_id, query, direction_id, products, error = await asyncio.to_thread(results.get)
+            while True:
+                try:
+                    worker_id, query, direction_id, products, error = results.get_nowait()
+                    break
+                except queue.Empty:
+                    await asyncio.sleep(0.1)
             active = max(0, active - 1)
 
             if query is None:
