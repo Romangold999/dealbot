@@ -19,6 +19,20 @@ _ACCESSORY = {
 _BUNDLE = {
     "набор", "комплект", "комплектация", "бандл", "bundle", "2в1", "3в1",
 }
+_BRANDS = {
+    "apple", "samsung", "xiaomi", "redmi", "poco", "huawei", "honor", "oppo",
+    "vivo", "realme", "oneplus", "google", "sony", "lg", "bosch", "dyson",
+    "philips", "hp", "dell", "lenovo", "asus", "acer", "msi", "gigabyte",
+    "intel", "amd", "nvidia", "canon", "nikon", "fujifilm", "jbl", "bose",
+    "marshall", "sennheiser", "anker", "baseus", "tefal", "braun", "rowenta",
+    "electrolux", "haier", "hisense", "tcl", "beko", "indesit", "whirlpool",
+    "kitfort", "redmond", "polaris", "yamaha", "pioneer", "karcher", "makita",
+    "dewalt", "metabo", "hikoki", "milwaukee", "stanley", "grohe", "ikea",
+    "lego", "logitech", "razer", "steelseries", "corsair", "hyperx",
+    "nintendo", "playstation", "xbox", "microsoft", "amazon", "garmin",
+    "fitbit", "polar", "suunto", "meizu", "tecno", "infinix", "motorola",
+    "nokia", "nothing", "zte", "tenda", "keenetic", "mikrotik",
+}
 _CONDITION = {
     "used": {"б/у", "бу", "уцененный", "уценённый", "восстановленный", "refurbished"},
     "new": {"новый", "новая", "новое", "новые", "new"},
@@ -88,6 +102,9 @@ def compare_products(left: dict, right: dict) -> dict:
         return {"comparable": False, "confidence": 0.0, "reason": "missing title"}
 
     ta, tb = set(_tokens(a)), set(_tokens(b))
+    brands_a, brands_b = ta & _BRANDS, tb & _BRANDS
+    if brands_a and brands_b and not (brands_a & brands_b):
+        return {"comparable": False, "confidence": 0.0, "reason": "brand mismatch"}
     if ta & _ACCESSORY or tb & _ACCESSORY:
         return {"comparable": False, "confidence": 0.0, "reason": "accessory"}
 
