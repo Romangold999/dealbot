@@ -170,18 +170,29 @@ def price_history(link: str, days: int = 3) -> list[float]:
 
 
 def observe_price(link: str, price: float):
-    """Append a verified price observation and return earlier 3-day samples."""
+    """Record a useful sample at most hourly unless the price materially changes."""
     now = datetime.now(timezone.utc)
     cutoff = (now - timedelta(days=3)).isoformat()
+    hour_cutoff = (now - timedelta(hours=1)).isoformat()
     with connect() as db:
         previous = [r[0] for r in db.execute(
             "SELECT price FROM prices WHERE link=? AND observed_at>=? ORDER BY observed_at",
             (link, cutoff),
         )]
-        db.execute(
-            "INSERT INTO prices(link, observed_at, price) VALUES (?, ?, ?)",
-            (link, now.isoformat(), price),
+        latest = db.execute(
+            "SELECT observed_at, price FROM prices WHERE link=? ORDER BY observed_at DESC LIMIT 1",
+            (link,),
+        ).fetchone()
+        should_store = (
+            latest is None
+            or abs(float(price) - float(latest["price"])) >= max(1.0, float(latest["price"]) * 0.005)
+            or latest["observed_at"] <= hour_cutoff
         )
+        if should_store:
+            db.execute(
+                "INSERT INTO prices(link, observed_at, price) VALUES (?, ?, ?)",
+                (link, now.isoformat(), price),
+            )
     return previous
 
 
