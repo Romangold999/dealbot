@@ -14,7 +14,7 @@ _STOP = {
 _ACCESSORY = {
     "чехол", "стекло", "пленка", "плёнка", "кабель", "зарядка", "адаптер",
     "держатель", "крепление", "насадка", "фильтр", "картридж", "ремешок",
-    "сумка", "кейс", "защитный", "защитная", "аксессуар",
+    "сумка", "кейс", "case", "защитный", "защитная", "аксессуар",
 }
 _BUNDLE = {
     "набор", "комплект", "комплектация", "бандл", "bundle", "2в1", "3в1",
@@ -56,10 +56,18 @@ def _sizes(name):
 
 
 def _model_tokens(tokens):
-    return {
-        t for t in tokens
-        if re.search(r"\d", t) and not re.fullmatch(r"\d{1,4}", t)
-    }
+    text = " ".join(tokens)
+    capacity_numbers = {m.group(1) for m in _CAPACITY.finditer(text)}
+    size_numbers = {m.group(1) for m in _SIZE.finditer(text)}
+    result = set()
+    for token in tokens:
+        if re.fullmatch(r"\d+(?:gb|гб|tb|тб|mb|мб)", token):
+            continue
+        if re.search(r"[a-zа-я]", token) and re.search(r"\d", token):
+            result.add(token)
+        elif token.isdigit() and len(token) >= 2 and token not in capacity_numbers and token not in size_numbers:
+            result.add(token)
+    return result
 
 
 def title_similarity(left: str, right: str) -> float:
@@ -93,11 +101,11 @@ def compare_products(left: dict, right: dict) -> dict:
         return {"comparable": False, "confidence": 0.0, "reason": "bundle mismatch"}
 
     capa, capb = _capacities(a), _capacities(b)
-    if capa and capb and capa != capb:
+    if bool(capa) != bool(capb) or (capa and capb and capa != capb):
         return {"comparable": False, "confidence": 0.0, "reason": "capacity mismatch"}
 
     sizea, sizeb = _sizes(a), _sizes(b)
-    if sizea and sizeb and sizea != sizeb:
+    if bool(sizea) != bool(sizeb) or (sizea and sizeb and sizea != sizeb):
         return {"comparable": False, "confidence": 0.0, "reason": "size mismatch"}
 
     ma, mb = _model_tokens(_tokens(a)), _model_tokens(_tokens(b))
