@@ -6,6 +6,7 @@ returned to the async coordinator as soon as an individual search finishes.
 import asyncio
 import logging
 import queue
+import random
 import re
 import threading
 from pathlib import Path
@@ -50,7 +51,6 @@ def _ozon_items(session, query: str, limit: int):
                 "name": name,
                 "link": link,
                 "price_value": price,
-                "old_price_value": _number(record.get("oldPrice")),
                 "image_url": record.get("image"),
                 "source_query": query,
             })
@@ -88,7 +88,7 @@ def _search_worker(worker_id, tasks, results, stopped, limit):
         log.info("Ozon search worker %s stopped", worker_id)
 
 
-def _derive_directions(products, parent_query: str, max_new: int = 24):
+def _derive_directions(products, parent_query: str, max_new: int = 10):
     """Branch from actual brands/model identifiers and distinctive title phrases."""
     candidates = []
     for product in products:
@@ -126,6 +126,7 @@ def _derive_directions(products, parent_query: str, max_new: int = 24):
             continue
         seen.add(key)
         unique.append(phrase)
+    random.shuffle(unique)
     return unique[:max_new]
 
 
@@ -169,6 +170,14 @@ async def random_walk(on_batch, workers: int = 2, limit: int = 12):
 
             if query is None:
                 log.error("Search worker %s failed to start: %s", worker_id, error)
+                replacement = threading.Thread(
+                    target=_search_worker,
+                    args=(worker_id, tasks, results, stopped, limit),
+                    name=f"ozon-search-{worker_id}-retry",
+                    daemon=True,
+                )
+                threads[worker_id - 1] = replacement
+                replacement.start()
                 await asyncio.sleep(5)
                 continue
 
