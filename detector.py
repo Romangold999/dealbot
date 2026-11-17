@@ -49,7 +49,7 @@ _COLOR_ALIASES = {
     "коричневый": "brown", "коричневая": "brown", "brown": "brown",
 }
 _VARIANT_SIZE = re.compile(r"(?<![a-zа-я0-9])(?:размер|size|eu)\s*[:\-]?\s*(xxxs|xxs|xs|s|m|l|xl|xxl|xxxl|\d{2})(?![a-zа-я0-9])", re.I)
-_BUNDLE_COUNT = re.compile(r"(?:набор|комплект|упаковк\w*)\s*(?:из|по)?\s*(\d+)", re.I)
+_BUNDLE_COUNT = re.compile(r"(?:набор|комплект|упаковк\w*)[^\d]{0,30}(\d+)", re.I)
 _CONDITION = {
     "used": {"б/у", "бу", "уцененный", "уценённый", "восстановленный", "refurbished"},
     "new": {"новый", "новая", "новое", "новые", "new"},
