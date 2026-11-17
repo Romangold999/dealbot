@@ -72,6 +72,15 @@ def init_db():
         );
         CREATE INDEX IF NOT EXISTS directions_ready
             ON search_directions(enabled, last_attempt, reward);
+        CREATE TABLE IF NOT EXISTS offer_cache (
+            link TEXT PRIMARY KEY,
+            name TEXT NOT NULL,
+            price REAL NOT NULL,
+            query TEXT,
+            sku TEXT,
+            seen_at TEXT NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS offer_cache_seen ON offer_cache(seen_at);
         """)
         # Bootstrap only the first run. These are temporary entry points, not
         # a recurring category/search list; all later directions are discovered.
@@ -297,6 +306,42 @@ def cleanup_storage():
     now = datetime.now(timezone.utc)
     with connect() as db:
         db.execute("DELETE FROM prices WHERE observed_at < ?", ((now - timedelta(days=3)).isoformat(),))
+        db.execute("DELETE FROM offer_cache WHERE seen_at < ?", ((now - timedelta(hours=2)).isoformat(),))
         db.execute("DELETE FROM deliveries WHERE sent_at < ?", ((now - timedelta(days=30)).isoformat(),))
         db.execute("DELETE FROM alerts WHERE sent_at < ?", ((now - timedelta(days=30)).isoformat(),))
         db.execute("DELETE FROM search_directions WHERE enabled=0 AND created_at < ?", ((now - timedelta(days=30)).isoformat(),))
+
+
+def cache_offers(products: list[dict], query: str = ""):
+    now = datetime.now(timezone.utc).isoformat()
+    rows = []
+    for product in products:
+        link = product.get("link")
+        name = product.get("name")
+        price = product.get("price_value")
+        if link and name and price and float(price) > 0:
+            rows.append((
+                link, name, float(price), query or product.get("source_query"),
+                str(product.get("sku") or ""), now,
+            ))
+    if not rows:
+        return
+    with connect() as db:
+        db.executemany(
+            "INSERT INTO offer_cache(link, name, price, query, sku, seen_at) "
+            "VALUES (?, ?, ?, ?, ?, ?) "
+            "ON CONFLICT(link) DO UPDATE SET name=excluded.name, price=excluded.price, "
+            "query=excluded.query, sku=excluded.sku, seen_at=excluded.seen_at",
+            rows,
+        )
+
+
+def recent_offers(hours: int = 2) -> list[dict]:
+    cutoff = (datetime.now(timezone.utc) - timedelta(hours=max(1, hours))).isoformat()
+    with connect() as db:
+        rows = db.execute(
+            "SELECT link, name, price AS price_value, query AS source_query, sku "
+            "FROM offer_cache WHERE seen_at>=? ORDER BY seen_at DESC",
+            (cutoff,),
+        ).fetchall()
+        return [dict(row) for row in rows]
