@@ -59,6 +59,35 @@ class ProductMatchingTests(unittest.TestCase):
         self.assertFalse(result["comparable"])
         self.assertEqual(result["reason"], "bundle mismatch")
 
+    def test_color_aliases_match_but_different_colors_do_not(self):
+        same = compare_products(
+            {"name": "Apple iPhone 15 Pro 256GB черный"},
+            {"name": "Apple iPhone 15 Pro 256GB black"},
+        )
+        different = compare_products(
+            {"name": "Apple iPhone 15 Pro 256GB черный"},
+            {"name": "Apple iPhone 15 Pro 256GB белый"},
+        )
+        self.assertTrue(same["comparable"])
+        self.assertFalse(different["comparable"])
+        self.assertEqual(different["reason"], "color mismatch")
+
+    def test_explicit_clothing_size_must_match(self):
+        result = compare_products(
+            {"name": "Кроссовки Nike Air Max 270 размер 42"},
+            {"name": "Кроссовки Nike Air Max 270 размер 43"},
+        )
+        self.assertFalse(result["comparable"])
+        self.assertEqual(result["reason"], "variant size mismatch")
+
+    def test_bundle_quantity_must_match(self):
+        result = compare_products(
+            {"name": "Набор LEGO Creator 3 шт"},
+            {"name": "Набор LEGO Creator 5 шт"},
+        )
+        self.assertFalse(result["comparable"])
+        self.assertEqual(result["reason"], "bundle quantity mismatch")
+
     def test_peer_deal_requires_two_comparable_offers(self):
         product = {"name": "Samsung Galaxy Buds2 Pro", "link": "a", "price_value": 5000}
         one_peer = [{"name": "Samsung Galaxy Buds2 Pro", "link": "b", "price_value": 10000}]
