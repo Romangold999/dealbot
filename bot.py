@@ -95,10 +95,10 @@ def _detail_title_matches(product: dict, details: dict) -> bool:
 
 def _detail_price(details: dict) -> float | None:
     value = str(details.get("price") or "")
-    match = re.search(r"(\\d[\\d\\s\\u00a0\\u202f]*)\\s*₽", value)
+    match = re.search(r"(\d[\d\s\u00a0\u202f]*)\s*₽", value)
     if not match:
         return None
-    digits = re.sub(r"\\D", "", match.group(1))
+    digits = re.sub(r"\D", "", match.group(1))
     return float(digits) if digits else None
 
 
