@@ -160,10 +160,19 @@ def chats_for_query(query: str):
         return [r[0] for r in db.execute("SELECT chat_id FROM searches WHERE query=?", (query,))]
 
 
+def price_history(link: str, days: int = 3) -> list[float]:
+    cutoff = (datetime.now(timezone.utc) - timedelta(days=max(1, days))).isoformat()
+    with connect() as db:
+        return [r[0] for r in db.execute(
+            "SELECT price FROM prices WHERE link=? AND observed_at>=? ORDER BY observed_at",
+            (link, cutoff),
+        )]
+
+
 def observe_price(link: str, price: float):
-    """Return earlier 30-day samples, then append the new observation."""
+    """Return earlier 3-day samples, then append the new observation."""
     now = datetime.now(timezone.utc)
-    cutoff = (now - timedelta(days=30)).isoformat()
+    cutoff = (now - timedelta(days=3)).isoformat()
     with connect() as db:
         previous = [r[0] for r in db.execute(
             "SELECT price FROM prices WHERE link=? AND observed_at>=? ORDER BY observed_at",
