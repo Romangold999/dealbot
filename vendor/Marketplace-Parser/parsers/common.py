@@ -19,6 +19,17 @@ BROWSERS_DIR = BASE_DIR / "browser"
 
 os.environ["PLAYWRIGHT_BROWSERS_PATH"] = str(BROWSERS_DIR)
 
+# Termux/Android ships its own Node.js and Chromium. Playwright's bundled
+# Node binary is not available on Android, so point it at Termux explicitly.
+_TERMUX_PREFIX = Path(os.environ.get("PREFIX", ""))
+_TERMUX_NODE = _TERMUX_PREFIX / "bin" / "node"
+_TERMUX_CHROMIUM = _TERMUX_PREFIX / "bin" / "chromium-browser"
+if _TERMUX_PREFIX.exists() and str(_TERMUX_PREFIX).startswith("/data/data/com.termux/"):
+    if _TERMUX_NODE.is_file():
+        os.environ.setdefault("PLAYWRIGHT_NODEJS_PATH", str(_TERMUX_NODE))
+    if _TERMUX_CHROMIUM.is_file():
+        os.environ.setdefault("DEALBOT_CHROMIUM_EXECUTABLE", str(_TERMUX_CHROMIUM))
+
 
 def setup_logger(name: str) -> logging.Logger:
     """ERROR — в консоль. Файловый хендлер добавляется отдельно."""
@@ -63,7 +74,16 @@ def install_local_chromium() -> None:
 
 
 def launch_chromium(playwright, **launch_kwargs):
-    """playwright.chromium.launch(**launch_kwargs) с автоустановкой при первом запуске."""
+    """Launch Chromium, using Termux's system browser when running on Android."""
+    system_chromium = os.environ.get("DEALBOT_CHROMIUM_EXECUTABLE")
+    if system_chromium and Path(system_chromium).is_file():
+        launch_kwargs.setdefault("executable_path", system_chromium)
+        args = list(launch_kwargs.get("args") or [])
+        for required_arg in ("--no-sandbox", "--disable-gpu", "--disable-dev-shm-usage"):
+            if required_arg not in args:
+                args.append(required_arg)
+        launch_kwargs["args"] = args
+
     for attempt in (1, 2):
         try:
             return playwright.chromium.launch(**launch_kwargs)
