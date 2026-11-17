@@ -11,6 +11,14 @@ class ProductMatchingTests(unittest.TestCase):
         )
         self.assertTrue(result["comparable"])
 
+    def test_different_brand_does_not_match(self):
+        result = compare_products(
+            {"name": "Samsung Galaxy S24 Ultra"},
+            {"name": "Xiaomi Galaxy S24 Ultra"},
+        )
+        self.assertFalse(result["comparable"])
+        self.assertEqual(result["reason"], "brand mismatch")
+
     def test_different_generation_does_not_match(self):
         result = compare_products(
             {"name": "Samsung Galaxy S24 Ultra 256GB"},
