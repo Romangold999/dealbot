@@ -19,7 +19,7 @@ from aiogram.types import (
 from dotenv import load_dotenv
 
 import db
-from detector import compare_products, evaluate_peer_deal, history_anomaly, title_similarity
+from detector import compare_products, evaluate_peer_deal, history_anomaly
 from scanner import fetch_product_details, random_walk
 
 load_dotenv()
@@ -140,7 +140,6 @@ async def _process_batch(bot: Bot, query: str, products: list[dict], error: str 
         return 0.0
 
     sent_links = set()
-    qualified = 0
     reward = 0.0
 
     for product in products:
@@ -190,10 +189,10 @@ async def _process_batch(bot: Bot, query: str, products: list[dict], error: str 
         db.observe_price(link, current_price)
         score = peer_deal["score"] if peer_qualified else 80
         reason = peer_deal["reason"] if peer_qualified else history_reason
-        delivered = await _send_deal(bot, product, reason, score)
-        if delivered:
-            qualified += 1
-            reward += min(2.5, score / 40)
+        # Reward the search direction for a verified opportunity even when a
+        # subscriber is temporarily at the Telegram daily delivery limit.
+        reward += min(2.5, score / 40)
+        await _send_deal(bot, product, reason, score)
 
     return min(5.0, reward)
 
