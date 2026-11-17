@@ -20,7 +20,7 @@ from dotenv import load_dotenv
 
 import db
 from detector import compare_products, evaluate_peer_deal, history_anomaly
-from scanner import fetch_product_details, random_walk
+from scanner import DetailsWorker, random_walk
 
 load_dotenv()
 
@@ -132,7 +132,7 @@ async def _send_deal(bot: Bot, product: dict, reason: str, score: int) -> int:
     return delivered
 
 
-async def _process_batch(bot: Bot, query: str, products: list[dict], error: str | None):
+async def _process_batch(bot: Bot, details_worker: DetailsWorker, query: str, products: list[dict], error: str | None):
     """Handle each completed Ozon search immediately while other workers continue."""
     if error:
         log.warning("Search '%s' returned error: %s", query, error)
@@ -160,7 +160,7 @@ async def _process_batch(bot: Bot, query: str, products: list[dict], error: str 
         # Re-open the exact product page. The current card price, not oldPrice,
         # must still support the alert before anything is sent.
         try:
-            details = await asyncio.to_thread(fetch_product_details, product)
+            details = await details_worker.fetch(product)
         except Exception as exc:
             log.warning("Could not verify candidate '%s': %s", product.get("name"), type(exc).__name__)
             continue
@@ -197,7 +197,7 @@ async def _process_batch(bot: Bot, query: str, products: list[dict], error: str 
     return min(5.0, reward)
 
 
-async def _scheduler(bot: Bot):
+async def _scheduler(bot: Bot, details_worker: DetailsWorker):
     last_cleanup = time.monotonic()
     while True:
         if not db.all_subscribers():
@@ -211,7 +211,7 @@ async def _scheduler(bot: Bot):
         try:
             log.info("Starting continuous Ozon random walk (%d search workers)", SEARCH_WORKERS)
             await random_walk(
-                lambda query, products, error: _process_batch(bot, query, products, error),
+                lambda query, products, error: _process_batch(bot, details_worker, query, products, error),
                 workers=SEARCH_WORKERS,
                 limit=RESULTS_LIMIT,
             )
@@ -245,7 +245,8 @@ async def main():
     except Exception:
         log.warning("Could not update the bot command menu")
 
-    scheduler = asyncio.create_task(_scheduler(bot))
+    details_worker = DetailsWorker()
+    scheduler = asyncio.create_task(_scheduler(bot, details_worker))
     try:
         await dp.start_polling(bot)
     finally:
@@ -254,6 +255,7 @@ async def main():
             await scheduler
         except asyncio.CancelledError:
             pass
+        await asyncio.to_thread(details_worker.close)
         await bot.session.close()
 
 
