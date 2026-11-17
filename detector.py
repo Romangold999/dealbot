@@ -33,6 +33,23 @@ _BRANDS = {
     "fitbit", "polar", "suunto", "meizu", "tecno", "infinix", "motorola",
     "nokia", "nothing", "zte", "tenda", "keenetic", "mikrotik",
 }
+_COLOR_ALIASES = {
+    "черный": "black", "черная": "black", "черное": "black", "black": "black",
+    "белый": "white", "белая": "white", "белое": "white", "white": "white",
+    "синий": "blue", "синяя": "blue", "голубой": "blue", "blue": "blue",
+    "красный": "red", "красная": "red", "red": "red",
+    "зеленый": "green", "зеленая": "green", "green": "green",
+    "розовый": "pink", "розовая": "pink", "pink": "pink",
+    "серый": "gray", "серая": "gray", "gray": "gray", "grey": "gray",
+    "серебристый": "silver", "серебристая": "silver", "silver": "silver",
+    "золотой": "gold", "золотая": "gold", "gold": "gold",
+    "фиолетовый": "purple", "фиолетовая": "purple", "purple": "purple",
+    "желтый": "yellow", "желтая": "yellow", "yellow": "yellow",
+    "бежевый": "beige", "бежевая": "beige", "beige": "beige",
+    "коричневый": "brown", "коричневая": "brown", "brown": "brown",
+}
+_VARIANT_SIZE = re.compile(r"(?<![a-zа-я0-9])(?:размер|size|eu)\\s*[:\\-]?\\s*(xxxs|xxs|xs|s|m|l|xl|xxl|xxxl|\\d{2})(?![a-zа-я0-9])", re.I)
+_BUNDLE_COUNT = re.compile(r"(?:набор|комплект|упаковк\\w*)\\s*(?:из|по)?\\s*(\\d+)", re.I)
 _CONDITION = {
     "used": {"б/у", "бу", "уцененный", "уценённый", "восстановленный", "refurbished"},
     "new": {"новый", "новая", "новое", "новые", "new"},
@@ -112,10 +129,24 @@ def compare_products(left: dict, right: dict) -> dict:
     if ca == "conflict" or cb == "conflict" or ca != cb:
         return {"comparable": False, "confidence": 0.0, "reason": "condition mismatch"}
 
-    # A bundle is only comparable to another explicitly equivalent bundle.
+    # Bundle composition, color and explicit clothing/shoe sizes are variants.
     ba, bb = bool(ta & _BUNDLE), bool(tb & _BUNDLE)
     if ba != bb:
         return {"comparable": False, "confidence": 0.0, "reason": "bundle mismatch"}
+    count_a = _BUNDLE_COUNT.search(a)
+    count_b = _BUNDLE_COUNT.search(b)
+    if bool(count_a) != bool(count_b) or (count_a and count_b and count_a.group(1) != count_b.group(1)):
+        return {"comparable": False, "confidence": 0.0, "reason": "bundle quantity mismatch"}
+
+    colors_a = {_COLOR_ALIASES[t] for t in ta if t in _COLOR_ALIASES}
+    colors_b = {_COLOR_ALIASES[t] for t in tb if t in _COLOR_ALIASES}
+    if bool(colors_a) != bool(colors_b) or (colors_a and colors_b and colors_a != colors_b):
+        return {"comparable": False, "confidence": 0.0, "reason": "color mismatch"}
+
+    size_a = {m.group(1).lower() for m in _VARIANT_SIZE.finditer(a)}
+    size_b = {m.group(1).lower() for m in _VARIANT_SIZE.finditer(b)}
+    if bool(size_a) != bool(size_b) or (size_a and size_b and size_a != size_b):
+        return {"comparable": False, "confidence": 0.0, "reason": "variant size mismatch"}
 
     capa, capb = _capacities(a), _capacities(b)
     if bool(capa) != bool(capb) or (capa and capb and capa != capb):
