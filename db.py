@@ -134,7 +134,8 @@ def deliveries_in_last_hours(chat_id: int, hours: int = 24) -> int:
 def record_delivery(chat_id: int, link: str):
     with connect() as db:
         db.execute(
-            "INSERT OR IGNORE INTO deliveries(chat_id, link, sent_at) VALUES (?, ?, ?)",
+            "INSERT INTO deliveries(chat_id, link, sent_at) VALUES (?, ?, ?) "
+            "ON CONFLICT(chat_id, link) DO UPDATE SET sent_at=excluded.sent_at",
             (chat_id, link, datetime.now(timezone.utc).isoformat()),
         )
 
@@ -310,6 +311,11 @@ def cleanup_storage():
         db.execute("DELETE FROM deliveries WHERE sent_at < ?", ((now - timedelta(days=30)).isoformat(),))
         db.execute("DELETE FROM alerts WHERE sent_at < ?", ((now - timedelta(days=30)).isoformat(),))
         db.execute("DELETE FROM search_directions WHERE enabled=0 AND created_at < ?", ((now - timedelta(days=30)).isoformat(),))
+        db.execute(
+            "DELETE FROM search_directions WHERE attempts>=5 AND reward<0.05 "
+            "AND last_attempt < ?",
+            ((now - timedelta(days=30)).isoformat(),),
+        )
 
 
 def cache_offers(products: list[dict], query: str = ""):
