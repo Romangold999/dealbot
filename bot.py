@@ -89,9 +89,17 @@ def _detail_title_matches(product: dict, details: dict) -> bool:
     detail_name = str(details.get("name") or "").strip()
     if not detail_name:
         return False
-    detail_product = {"name": detail_name}
-    match = compare_products(product, detail_product)
+    match = compare_products(product, {"name": detail_name})
     return bool(match["comparable"] and match["confidence"] >= 0.78)
+
+
+def _detail_price(details: dict) -> float | None:
+    value = str(details.get("price") or "")
+    match = re.search(r"(\\d[\\d\\s\\u00a0\\u202f]*)\\s*₽", value)
+    if not match:
+        return None
+    digits = re.sub(r"\\D", "", match.group(1))
+    return float(digits) if digits else None
 
 
 async def _send_deal(bot: Bot, product: dict, reason: str, score: int) -> int:
@@ -142,31 +150,46 @@ async def _process_batch(bot: Bot, query: str, products: list[dict], error: str 
             continue
         sent_links.add(link)
 
-        previous = db.observe_price(link, float(price))
-        peer_deal = evaluate_peer_deal(product, products)
-        history_reason = history_anomaly(float(price), previous, HISTORY_THRESHOLD)
-
-        peer_qualified = bool(peer_deal and peer_deal["score"] >= MIN_DEAL_SCORE)
-        if not peer_qualified and not history_reason:
+        previous = db.price_history(link, days=3)
+        initial_peer = evaluate_peer_deal(product, products)
+        initial_history = history_anomaly(float(price), previous, HISTORY_THRESHOLD)
+        if not (initial_peer and initial_peer["score"] >= MIN_DEAL_SCORE) and not initial_history:
             continue
         if not db.should_send_alert(link, float(price)):
             continue
 
-        score = peer_deal["score"] if peer_qualified else 80
-        reason = peer_deal["reason"] if peer_qualified else history_reason
-
-        # Full product page is a final identity check, not a source of advertised discounts.
+        # Re-open the exact product page. The current card price, not oldPrice,
+        # must still support the alert before anything is sent.
         try:
             details = await asyncio.to_thread(fetch_product_details, product)
         except Exception as exc:
             log.warning("Could not verify candidate '%s': %s", product.get("name"), type(exc).__name__)
             continue
         if not _detail_title_matches(product, details):
-            log.info("Candidate rejected after detail verification: %s", product.get("name"))
+            log.info("Candidate rejected after detail identity verification: %s", product.get("name"))
+            continue
+
+        current_price = _detail_price(details)
+        if not current_price or abs(current_price - float(price)) / float(price) > 0.10:
+            log.info("Candidate rejected: live price differs from search price for %s", product.get("name"))
             continue
 
         product["name"] = details.get("name") or product["name"]
+        product["price_value"] = current_price
         product["characteristics"] = details.get("characteristics") or {}
+
+        # Recalculate the anomaly using the verified live price.
+        peer_deal = evaluate_peer_deal(product, products)
+        history_reason = history_anomaly(current_price, previous, HISTORY_THRESHOLD)
+        peer_qualified = bool(peer_deal and peer_deal["score"] >= MIN_DEAL_SCORE)
+        if not peer_qualified and not history_reason:
+            continue
+        if not db.should_send_alert(link, current_price):
+            continue
+
+        db.observe_price(link, current_price)
+        score = peer_deal["score"] if peer_qualified else 80
+        reason = peer_deal["reason"] if peer_qualified else history_reason
         delivered = await _send_deal(bot, product, reason, score)
         if delivered:
             qualified += 1
