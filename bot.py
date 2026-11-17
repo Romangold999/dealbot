@@ -139,6 +139,14 @@ async def _process_batch(bot: Bot, details_worker: DetailsWorker, query: str, pr
     if not products:
         return 0.0
 
+    # Keep a short-lived market sample so related offers found by earlier
+    # random-walk branches can be used as peers for this batch.
+    db.cache_offers(products, query)
+    pool_by_link = {item["link"]: item for item in db.recent_offers(hours=2)}
+    for item in products:
+        pool_by_link[item["link"]] = item
+    market_pool = list(pool_by_link.values())
+
     sent_links = set()
     reward = 0.0
 
@@ -150,7 +158,7 @@ async def _process_batch(bot: Bot, details_worker: DetailsWorker, query: str, pr
         sent_links.add(link)
 
         previous = db.observe_price(link, float(price))
-        initial_peer = evaluate_peer_deal(product, products)
+        initial_peer = evaluate_peer_deal(product, market_pool)
         initial_history = history_anomaly(float(price), previous, HISTORY_THRESHOLD)
         if not (initial_peer and initial_peer["score"] >= MIN_DEAL_SCORE) and not initial_history:
             continue
@@ -176,9 +184,10 @@ async def _process_batch(bot: Bot, details_worker: DetailsWorker, query: str, pr
         product["name"] = details.get("name") or product["name"]
         product["price_value"] = current_price
         product["characteristics"] = details.get("characteristics") or {}
+        db.cache_offers([product], query)
 
         # Recalculate the anomaly using the verified live price.
-        peer_deal = evaluate_peer_deal(product, products)
+        peer_deal = evaluate_peer_deal(product, market_pool)
         history_reason = history_anomaly(current_price, previous, HISTORY_THRESHOLD)
         peer_qualified = bool(peer_deal and peer_deal["score"] >= MIN_DEAL_SCORE)
         if not peer_qualified and not history_reason:
