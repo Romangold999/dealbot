@@ -109,7 +109,7 @@ def compare_products(left: dict, right: dict) -> dict:
         return {"comparable": False, "confidence": 0.0, "reason": "size mismatch"}
 
     ma, mb = _model_tokens(_tokens(a)), _model_tokens(_tokens(b))
-    if ma and mb and not (ma & mb):
+    if bool(ma) != bool(mb) or (ma and mb and not (ma & mb)):
         return {"comparable": False, "confidence": 0.0, "reason": "model mismatch"}
 
     similarity = title_similarity(a, b)
@@ -135,7 +135,7 @@ def _robust_prices(values):
     deviations = [abs(v - center) for v in values]
     mad = median(deviations)
     if mad <= 0:
-        return values
+        return [v for v in values if v == center]
     # Robustly remove extreme price listings without assuming a normal distribution.
     return [v for v in values if abs(v - center) <= 3.5 * 1.4826 * mad]
 
