@@ -1,165 +1,216 @@
-﻿import re
+"""Ozon-only adaptive random-walk scanner.
+
+Each search worker owns one Playwright session for its entire lifetime. Results are
+returned to the async coordinator as soon as an individual search finishes.
+"""
+import asyncio
 import logging
-import sys
-import time
+import queue
+import re
+import threading
 from pathlib import Path
-from urllib.parse import quote
+import sys
+
+import db
 
 VENDOR = Path(__file__).parent / "vendor" / "Marketplace-Parser"
 sys.path.insert(0, str(VENDOR))
-
 from parsers import ozon  # noqa: E402
 
 log = logging.getLogger("dealbot.scanner")
 
-
-# Wide automatic searches across the main product departments. Marketplace search
-# pages return samples; this is a broader seed list, not a full catalog export.
-AUTO_SEARCH_GROUPS = {
-    "Р­Р»РµРєС‚СЂРѕРЅРёРєР°": (
-        "СЃРјР°СЂС‚С„РѕРЅС‹", "РїР»Р°РЅС€РµС‚С‹", "РЅРѕСѓС‚Р±СѓРєРё", "РєРѕРјРїСЊСЋС‚РµСЂРЅС‹Рµ РјРѕРЅРёС‚РѕСЂС‹", "С‚РµР»РµРІРёР·РѕСЂС‹",
-        "РЅР°СѓС€РЅРёРєРё", "СЃРјР°СЂС‚-С‡Р°СЃС‹", "С„РѕС‚РѕР°РїРїР°СЂР°С‚С‹", "РєРѕРјРїСЊСЋС‚РµСЂРЅС‹Рµ РєРѕРјРїР»РµРєС‚СѓСЋС‰РёРµ",
-        "РєРѕРјРїСЊСЋС‚РµСЂРЅР°СЏ РїРµСЂРёС„РµСЂРёСЏ", "РёРіСЂРѕРІС‹Рµ РїСЂРёСЃС‚Р°РІРєРё", "СЂРѕСѓС‚РµСЂС‹", "СЌР»РµРєС‚СЂРѕС‚РѕРІР°СЂС‹", "СЌР»РµРєС‚СЂРѕРЅРёРєР°",
-    ),
-    "Р‘С‹С‚РѕРІР°СЏ С‚РµС…РЅРёРєР°": (
-        "Р±С‹С‚РѕРІР°СЏ С‚РµС…РЅРёРєР°", "РєСЂСѓРїРЅР°СЏ Р±С‹С‚РѕРІР°СЏ С‚РµС…РЅРёРєР°", "С…РѕР»РѕРґРёР»СЊРЅРёРєРё", "СЃС‚РёСЂР°Р»СЊРЅС‹Рµ РјР°С€РёРЅС‹",
-        "РїРѕСЃСѓРґРѕРјРѕРµС‡РЅС‹Рµ РјР°С€РёРЅС‹", "РїС‹Р»РµСЃРѕСЃС‹", "СЂРѕР±РѕС‚С‹-РїС‹Р»РµСЃРѕСЃС‹", "РєРѕС„РµРјР°С€РёРЅС‹",
-        "РјРёРєСЂРѕРІРѕР»РЅРѕРІС‹Рµ РїРµС‡Рё", "РєРѕРЅРґРёС†РёРѕРЅРµСЂС‹", "С‚РµС…РЅРёРєР° РґР»СЏ РєСѓС…РЅРё", "С„РµРЅС‹ Рё СЃС‚Р°Р№Р»РµСЂС‹",
-    ),
-    "РћРґРµР¶РґР° Рё РѕР±СѓРІСЊ": (
-        "РѕРґРµР¶РґР° Р¶РµРЅСЃРєР°СЏ", "РѕРґРµР¶РґР° РјСѓР¶СЃРєР°СЏ", "РѕРґРµР¶РґР° РґРµС‚СЃРєР°СЏ", "РїР»Р°С‚СЊСЏ", "РєСѓСЂС‚РєРё",
-        "РґР¶РёРЅСЃС‹", "С„СѓС‚Р±РѕР»РєРё", "СЃРІРёС‚РµСЂР°", "РЅРёР¶РЅРµРµ Р±РµР»СЊРµ", "СЃРїРѕСЂС‚РёРІРЅР°СЏ РѕРґРµР¶РґР°",
-        "РѕР±СѓРІСЊ Р¶РµРЅСЃРєР°СЏ", "РѕР±СѓРІСЊ РјСѓР¶СЃРєР°СЏ", "РєСЂРѕСЃСЃРѕРІРєРё", "Р±РѕС‚РёРЅРєРё", "СЃСѓРјРєРё", "Р°РєСЃРµСЃСЃСѓР°СЂС‹",
-    ),
-    "Р”РѕРј Рё РјРµР±РµР»СЊ": (
-        "С‚РѕРІР°СЂС‹ РґР»СЏ РґРѕРјР°", "РјРµР±РµР»СЊ", "РїРѕСЃСѓРґР°", "РїРѕСЃС‚РµР»СЊРЅРѕРµ Р±РµР»СЊРµ", "РґРѕРјР°С€РЅРёР№ С‚РµРєСЃС‚РёР»СЊ",
-        "СЃРІРµС‚РёР»СЊРЅРёРєРё", "РґРµРєРѕСЂ РґР»СЏ РґРѕРјР°", "С‚РѕРІР°СЂС‹ РґР»СЏ СѓР±РѕСЂРєРё", "С‚РѕРІР°СЂС‹ РґР»СЏ С…СЂР°РЅРµРЅРёСЏ", "РјР°С‚СЂР°СЃС‹",
-    ),
-    "РљСЂР°СЃРѕС‚Р°": (
-        "РєРѕСЃРјРµС‚РёРєР°", "РїР°СЂС„СЋРјРµСЂРёСЏ", "СѓС…РѕРґ Р·Р° РєРѕР¶РµР№", "СѓС…РѕРґ Р·Р° РІРѕР»РѕСЃР°РјРё", "РјР°РЅРёРєСЋСЂ",
-        "СЌР»РµРєС‚СЂРёС‡РµСЃРєРёРµ Р·СѓР±РЅС‹Рµ С‰РµС‚РєРё", "Р±СЂРёС‚РІС‹ Рё С‚СЂРёРјРјРµСЂС‹",
-    ),
-    "Р”РµС‚СЃРєРёРµ С‚РѕРІР°СЂС‹": (
-        "РґРµС‚СЃРєРёРµ С‚РѕРІР°СЂС‹", "РґРµС‚СЃРєРёРµ РёРіСЂСѓС€РєРё", "РґРµС‚СЃРєР°СЏ РѕРґРµР¶РґР°", "РєРѕР»СЏСЃРєРё", "Р°РІС‚РѕРєСЂРµСЃР»Р°",
-        "С‚РѕРІР°СЂС‹ РґР»СЏ РЅРѕРІРѕСЂРѕР¶РґРµРЅРЅС‹С…",
-    ),
-    "РЎРїРѕСЂС‚ Рё РѕС‚РґС‹С…": (
-        "С‚РѕРІР°СЂС‹ РґР»СЏ СЃРїРѕСЂС‚Р°", "С‚СЂРµРЅР°Р¶РµСЂС‹", "РІРµР»РѕСЃРёРїРµРґС‹", "С‚РѕРІР°СЂС‹ РґР»СЏ С‚СѓСЂРёР·РјР°", "РєРµРјРїРёРЅРі",
-        "СЂС‹Р±Р°Р»РєР°", "СЃР°РјРѕРєР°С‚С‹", "С‚РѕРІР°СЂС‹ РґР»СЏ РїР»Р°РІР°РЅРёСЏ",
-    ),
-    "РђРІС‚Рѕ Рё РёРЅСЃС‚СЂСѓРјРµРЅС‚С‹": (
-        "Р°РІС‚РѕС‚РѕРІР°СЂС‹", "Р°РІС‚РѕР°РєСЃРµСЃСЃСѓР°СЂС‹", "С€РёРЅС‹", "РёРЅСЃС‚СЂСѓРјРµРЅС‚С‹", "СЌР»РµРєС‚СЂРѕРёРЅСЃС‚СЂСѓРјРµРЅС‚С‹",
-        "С‚РѕРІР°СЂС‹ РґР»СЏ СЂРµРјРѕРЅС‚Р°", "Р°РІС‚РѕСЌР»РµРєС‚СЂРѕРЅРёРєР°",
-    ),
-    "Р—РґРѕСЂРѕРІСЊРµ": (
-        "С‚РѕРІР°СЂС‹ РґР»СЏ Р·РґРѕСЂРѕРІСЊСЏ", "РјР°СЃСЃР°Р¶РµСЂС‹", "РјРµРґРёС†РёРЅСЃРєРёРµ РїСЂРёР±РѕСЂС‹", "РѕСЂС‚РѕРїРµРґРёС‡РµСЃРєРёРµ С‚РѕРІР°СЂС‹",
-    ),
-    "Р—РѕРѕС‚РѕРІР°СЂС‹": (
-        "С‚РѕРІР°СЂС‹ РґР»СЏ Р¶РёРІРѕС‚РЅС‹С…", "РєРѕСЂРјР° РґР»СЏ Р¶РёРІРѕС‚РЅС‹С…", "С‚РѕРІР°СЂС‹ РґР»СЏ РєРѕС€РµРє", "С‚РѕРІР°СЂС‹ РґР»СЏ СЃРѕР±Р°Рє",
-    ),
-    "РљРЅРёРіРё Рё РѕС„РёСЃ": (
-        "РєРЅРёРіРё", "РєР°РЅС†С‚РѕРІР°СЂС‹", "РїСЂРёРЅС‚РµСЂС‹", "РѕС„РёСЃРЅР°СЏ С‚РµС…РЅРёРєР°", "РЅР°СЃС‚РѕР»СЊРЅС‹Рµ РёРіСЂС‹",
-    ),
-    "РЎР°Рґ Рё РґР°С‡Р°": (
-        "С‚РѕРІР°СЂС‹ РґР»СЏ СЃР°РґР°", "СЃР°РґРѕРІР°СЏ С‚РµС…РЅРёРєР°", "С‚РѕРІР°СЂС‹ РґР»СЏ РґР°С‡Рё", "РіСЂРёР»СЊ Рё РјР°РЅРіР°Р»С‹",
-    ),
-    "РџСЂРѕРґСѓРєС‚С‹ Рё РЅР°РїРёС‚РєРё": (
-        "РїСЂРѕРґСѓРєС‚С‹ РїРёС‚Р°РЅРёСЏ", "РєРѕС„Рµ", "С‡Р°Р№", "СЃР»Р°РґРѕСЃС‚Рё", "С€РѕРєРѕР»Р°Рґ Рё РєРѕРЅС„РµС‚С‹", "Р±Р°РєР°Р»РµСЏ", "РЅР°РїРёС‚РєРё",
-    ),
-    "РЎС‚СЂРѕРёС‚РµР»СЊСЃС‚РІРѕ Рё СЂРµРјРѕРЅС‚": (
-        "СЃР°РЅС‚РµС…РЅРёРєР°", "СЌР»РµРєС‚СЂРёРєР° РґР»СЏ РґРѕРјР°", "СЃС‚СЂРѕРёС‚РµР»СЊРЅС‹Рµ РјР°С‚РµСЂРёР°Р»С‹", "РєСЂР°СЃРєРё Рё Р»Р°РєРё",
-        "РІРѕРґРѕРЅР°РіСЂРµРІР°С‚РµР»Рё", "РґРІРµСЂРЅР°СЏ С„СѓСЂРЅРёС‚СѓСЂР°", "Р·Р°РјРєРё",
-    ),
+_STOP = {
+    "и", "в", "на", "для", "с", "по", "от", "до", "из", "под", "the", "new",
+    "новый", "новая", "новое", "новые", "товар", "купить", "оригинал",
+    "официальный", "доставка", "россия", "шт", "штук", "цвет", "модель",
+    "артикул", "версия", "подарок", "скидка", "хит", "продаж",
 }
-AUTO_SEARCHES = tuple(query for queries in AUTO_SEARCH_GROUPS.values() for query in queries)
-QUERY_GROUP = {query: group for group, queries in AUTO_SEARCH_GROUPS.items() for query in queries}
 
 
 def _number(value):
     if isinstance(value, (int, float)):
         return float(value)
-    match = re.search(r"\d[\d\s]*", str(value or ""))
-    if not match:
-        return None
-    digits = re.sub(r"\D", "", match.group(0))
+    digits = re.sub(r"[^0-9]", "", str(value or ""))
     return float(digits) if digits else None
 
 
-def _wb_items(query: str, limit: int):
-    referer = f"https://www.wildberries.ru/catalog/0/search.aspx?search={quote(query)}&sort=benefit"
-    records = wildberries.search_wb(query, limit, referer=referer, extra={"sort": "benefit"})
-    found = []
-    for record in records:
-        sizes = record.get("sizes") or []
-        prices = sizes[0].get("price", {}) if sizes else {}
-        price = _number(prices.get("product"))
-        old_price = _number(prices.get("basic"))
-        article = record.get("id")
-        name = (record.get("name") or "").strip()
-        if price and article and name:
-            found.append({
-                "marketplace": "Wildberries",
-                "name": name,
-                "link": f"https://www.wildberries.ru/catalog/{article}/detail.aspx",
-                "price_value": price / 100,
-                "old_price_value": old_price / 100 if old_price and old_price > price else None,
-            })
-    return found
-
-
 def _ozon_items(session, query: str, limit: int):
-    records = ozon.search(session, "/search/", query, limit, extra={"sorting": "discount"})
+    records = ozon.search(session, "/search/", query, limit)
     found = []
     for record in records:
         price = _number(record.get("price"))
-        old_price = _number(record.get("oldPrice"))
         link = record.get("url")
         if link and not link.startswith("http"):
             link = "https://www.ozon.ru" + link
         name = (record.get("name") or "").strip()
-        if price and link and name:
+        if price and price > 0 and link and name:
             found.append({
                 "marketplace": "Ozon",
+                "sku": record.get("sku"),
                 "name": name,
                 "link": link,
                 "price_value": price,
-                "old_price_value": old_price if old_price and old_price > price else None,
+                "old_price_value": _number(record.get("oldPrice")),
                 "image_url": record.get("image"),
+                "source_query": query,
             })
     return found
 
 
-def scan_queries(queries=AUTO_SEARCHES, limit: int = 12):
-    """Fetch lightweight search results with one browser session per marketplace."""
-    results = {query: [] for query in queries}
-    errors = []
-    log.info("Starting fast scan: %d category themes", len(queries))
-
+def _search_worker(worker_id, tasks, results, stopped, limit):
+    """One dedicated thread and one non-shared Playwright session per worker."""
     session = None
     try:
         session = ozon.OzonSession()
-        for query in queries:
+        log.info("Ozon search worker %s ready", worker_id)
+        while not stopped.is_set():
+            task = tasks.get()
+            if task is None:
+                tasks.task_done()
+                break
+            query, direction_id = task
             try:
-                found = _ozon_items(session, query, limit)
-                results[query].extend(found)
-                photos = sum(bool(item.get("image_url")) for item in found)
-                log.info("Ozon category '%s': %d offers, %d photos", query, len(found), photos)
+                products = _ozon_items(session, query, limit)
+                results.put((worker_id, query, direction_id, products, None))
             except Exception as exc:
-                errors.append(f"Ozon {query}: {type(exc).__name__}: {exc}")
-                log.warning("Ozon category '%s' failed: %s", query, type(exc).__name__)
-            time.sleep(0.35)
+                log.warning("Ozon search failed for '%s': %s", query, type(exc).__name__)
+                results.put((worker_id, query, direction_id, [], f"{type(exc).__name__}: {exc}"))
+            finally:
+                tasks.task_done()
     except Exception as exc:
-        errors.append(f"Ozon session: {type(exc).__name__}: {exc}")
+        results.put((worker_id, None, None, [], f"worker startup: {type(exc).__name__}: {exc}"))
     finally:
-        if session:
-            session.shutdown()
+        if session is not None:
+            try:
+                session.shutdown()
+            except Exception:
+                log.exception("Could not close Ozon session for worker %s", worker_id)
+        log.info("Ozon search worker %s stopped", worker_id)
 
-    log.info("Fast scan complete: %d offers, %d errors", sum(map(len, results.values())), len(errors))
-    return results, errors
+
+def _derive_directions(products, parent_query: str, max_new: int = 24):
+    """Branch from actual brands/model identifiers and distinctive title phrases."""
+    candidates = []
+    for product in products:
+        tokens = re.findall(r"[a-zа-яё0-9]+", product.get("name", "").lower().replace("ё", "е"))
+        tokens = [t for t in tokens if t not in _STOP and len(t) >= 2]
+        if not tokens:
+            continue
+
+        # Model codes are especially useful exploration anchors.
+        model_positions = [i for i, token in enumerate(tokens) if re.search(r"\\d", token)]
+        for i in model_positions:
+            if i > 0:
+                candidates.append(" ".join(tokens[max(0, i - 2):i + 1]))
+            candidates.append(tokens[i])
+
+        # Brand/model and adjacent product phrases; avoid generating one-word noise.
+        for i in range(min(len(tokens) - 1, 5)):
+            candidates.append(" ".join(tokens[i:i + 2]))
+        if len(tokens) >= 3:
+            candidates.append(" ".join(tokens[:3]))
+
+    parent = set(re.findall(r"[a-zа-яё0-9]+", parent_query.lower().replace("ё", "е")))
+    unique = []
+    seen = set()
+    for phrase in candidates:
+        phrase = " ".join(phrase.split()).strip()
+        key = phrase.casefold()
+        words = set(key.split())
+        if len(phrase) < 3 or len(phrase) > 70 or key in seen:
+            continue
+        if key == parent_query.casefold() or (len(words) == 1 and not re.search(r"\\d", phrase)):
+            continue
+        seen.add(key)
+        unique.append(phrase)
+    return unique[:max_new]
+
+
+async def random_walk(on_batch, workers: int = 2, limit: int = 12):
+    """Run continuously until cancelled; process every completed query immediately.
+
+    on_batch(query, products, error) may be async and should return a reward in 0..5.
+    """
+    workers = max(1, min(3, int(workers)))
+    limit = max(3, min(30, int(limit)))
+    tasks = queue.Queue(maxsize=workers * 2)
+    results = queue.Queue()
+    stopped = threading.Event()
+    threads = [
+        threading.Thread(
+            target=_search_worker,
+            args=(i + 1, tasks, results, stopped, limit),
+            name=f"ozon-search-{i + 1}",
+            daemon=True,
+        )
+        for i in range(workers)
+    ]
+    for thread in threads:
+        thread.start()
+
+    active = 0
+    try:
+        while True:
+            # Keep all workers busy, but never enqueue an unbounded backlog.
+            while active < workers:
+                query = db.next_direction()
+                if not query:
+                    await asyncio.sleep(2)
+                    continue
+                tasks.put((query, active + 1))
+                active += 1
+                log.info("Random walk -> '%s'", query)
+
+            worker_id, query, direction_id, products, error = await asyncio.to_thread(results.get)
+            active = max(0, active - 1)
+
+            if query is None:
+                log.error("Search worker %s failed to start: %s", worker_id, error)
+                await asyncio.sleep(5)
+                continue
+
+            generated = _derive_directions(products, query)
+            added = db.add_directions(generated, parent_query=query, depth=1)
+            if added:
+                log.info("Direction '%s' generated %d new branches", query, added)
+
+            reward = 0.0
+            try:
+                reward = float(await on_batch(query, products, error) or 0.0)
+            except Exception:
+                log.exception("Batch handler failed for direction '%s'", query)
+            db.finish_direction(query, reward)
+
+            if error:
+                log.warning("Direction '%s' completed with error: %s", query, error)
+            else:
+                log.info("Direction '%s': %d offers; reward %.2f", query, len(products), reward)
+    finally:
+        stopped.set()
+        for _ in threads:
+            try:
+                tasks.put_nowait(None)
+            except queue.Full:
+                pass
+        await asyncio.gather(
+            *(asyncio.to_thread(thread.join, 15) for thread in threads),
+            return_exceptions=True,
+        )
 
 
 def scan_query(query: str, limit: int = 12):
-    """Compatibility wrapper for scanning one theme."""
-    results, errors = scan_queries((query,), limit)
-    return results[query], errors
+    """One-shot utility for diagnostics; production uses random_walk()."""
+    session = ozon.OzonSession()
+    try:
+        return _ozon_items(session, query, limit)
+    finally:
+        session.shutdown()
 
+
+def fetch_product_details(product: dict) -> dict:
+    """Fetch full Ozon characteristics for a candidate; never share sessions."""
+    session = ozon.OzonSession()
+    try:
+        return ozon.details(session, product.get("link") or product.get("sku"))
+    finally:
+        session.shutdown()
