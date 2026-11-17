@@ -198,7 +198,6 @@ async def _process_batch(bot: Bot, details_worker: DetailsWorker, query: str, pr
 
 
 async def _scheduler(bot: Bot, details_worker: DetailsWorker):
-    last_cleanup = time.monotonic()
     while True:
         if not db.all_subscribers():
             try:
@@ -214,6 +213,7 @@ async def _scheduler(bot: Bot, details_worker: DetailsWorker):
                 lambda query, products, error: _process_batch(bot, details_worker, query, products, error),
                 workers=SEARCH_WORKERS,
                 limit=RESULTS_LIMIT,
+                should_stop=lambda: not bool(db.all_subscribers()),
             )
         except asyncio.CancelledError:
             raise
@@ -221,12 +221,16 @@ async def _scheduler(bot: Bot, details_worker: DetailsWorker):
             log.exception("Random-walk scanner stopped unexpectedly; retrying")
             await asyncio.sleep(10)
 
-        if time.monotonic() - last_cleanup >= 6 * 60 * 60:
-            try:
-                db.cleanup_storage()
-                last_cleanup = time.monotonic()
-            except Exception:
-                log.exception("Storage cleanup failed")
+
+
+async def _maintenance():
+    while True:
+        await asyncio.sleep(6 * 60 * 60)
+        try:
+            await asyncio.to_thread(db.cleanup_storage)
+            log.info("Storage retention cleanup completed")
+        except Exception:
+            log.exception("Storage cleanup failed")
 
 
 async def main():
@@ -247,14 +251,13 @@ async def main():
 
     details_worker = DetailsWorker()
     scheduler = asyncio.create_task(_scheduler(bot, details_worker))
+    maintenance = asyncio.create_task(_maintenance())
     try:
         await dp.start_polling(bot)
     finally:
         scheduler.cancel()
-        try:
-            await scheduler
-        except asyncio.CancelledError:
-            pass
+        maintenance.cancel()
+        await asyncio.gather(scheduler, maintenance, return_exceptions=True)
         await asyncio.to_thread(details_worker.close)
         await bot.session.close()
 
