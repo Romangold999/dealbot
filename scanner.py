@@ -4,6 +4,7 @@ Each search worker owns one Playwright session for its entire lifetime. Results 
 returned to the async coordinator as soon as an individual search finishes.
 """
 import asyncio
+import concurrent.futures
 import logging
 import queue
 import random
@@ -231,3 +232,67 @@ def fetch_product_details(product: dict) -> dict:
         return ozon.details(session, product.get("link") or product.get("sku"))
     finally:
         session.shutdown()
+
+
+class DetailsWorker:
+    """A single bounded consumer with its own persistent Ozon browser session."""
+
+    def __init__(self):
+        self._tasks = queue.Queue(maxsize=2)
+        self._thread = threading.Thread(
+            target=self._run,
+            name="ozon-details-worker",
+            daemon=True,
+        )
+        self._thread.start()
+
+    def _run(self):
+        session = None
+        try:
+            session = ozon.OzonSession()
+            log.info("Ozon details worker ready")
+            while True:
+                task = self._tasks.get()
+                if task is None:
+                    self._tasks.task_done()
+                    break
+                product, future = task
+                try:
+                    result = ozon.details(session, product.get("link") or product.get("sku"))
+                    if not future.cancelled():
+                        future.set_result(result)
+                except Exception as exc:
+                    if not future.cancelled():
+                        future.set_exception(exc)
+                finally:
+                    self._tasks.task_done()
+        except Exception as exc:
+            log.exception("Ozon details worker stopped")
+            while True:
+                try:
+                    task = self._tasks.get_nowait()
+                except queue.Empty:
+                    break
+                if task is not None:
+                    _, future = task
+                    if not future.cancelled():
+                        future.set_exception(RuntimeError(f"details worker failed: {exc}"))
+                self._tasks.task_done()
+        finally:
+            if session is not None:
+                try:
+                    session.shutdown()
+                except Exception:
+                    log.exception("Could not close Ozon details session")
+
+    async def fetch(self, product: dict) -> dict:
+        if not self._thread.is_alive():
+            raise RuntimeError("Ozon details worker is not running")
+        future = concurrent.futures.Future()
+        self._tasks.put((product, future))
+        return await asyncio.wrap_future(future)
+
+    def close(self):
+        if self._thread.is_alive():
+            self._tasks.put(None)
+            self._thread.join(timeout=30)
