@@ -1,21 +1,16 @@
-
 import asyncio
 import html
 import logging
-import mimetypes
 import os
 import re
 import time
-from urllib.parse import urlsplit
 
-import aiohttp
 from aiogram import Bot, Dispatcher
 from aiogram.client.default import DefaultBotProperties
 from aiogram.enums import ParseMode
 from aiogram.filters import Command, CommandStart
 from aiogram.types import (
     BotCommand,
-    BufferedInputFile,
     InlineKeyboardButton,
     InlineKeyboardMarkup,
     LinkPreviewOptions,
@@ -24,35 +19,17 @@ from aiogram.types import (
 from dotenv import load_dotenv
 
 import db
-from detector import (
-    has_close_price_peers,
-    history_anomaly,
-    listed_discount_anomaly,
-    peer_price_anomaly,
-    title_similarity,
-)
-from scanner import AUTO_SEARCHES, AUTO_SEARCH_GROUPS, QUERY_GROUP, scan_queries
+from detector import compare_products, evaluate_peer_deal, history_anomaly, title_similarity
+from scanner import fetch_product_details, random_walk
 
 load_dotenv()
 
 TOKEN = os.getenv("BOT_TOKEN", "").strip()
-INTERVAL = max(1, int(os.getenv("SCAN_INTERVAL_MINUTES", "10")))
-RESULTS_LIMIT = max(
-    3,
-    min(30, int(os.getenv("RESULTS_PER_MARKETPLACE", "12"))),
-)
-PEER_THRESHOLD = max(
-    0.15,
-    min(0.8, float(os.getenv("PEER_DISCOUNT_THRESHOLD", "0.40"))),
-)
-HISTORY_THRESHOLD = max(
-    0.1,
-    min(0.8, float(os.getenv("HISTORY_DROP_THRESHOLD", "0.30"))),
-)
-LISTED_THRESHOLD = max(
-    0.3,
-    min(0.9, float(os.getenv("LISTED_DISCOUNT_THRESHOLD", "0.60"))),
-)
+RESULTS_LIMIT = max(3, min(30, int(os.getenv("RESULTS_PER_MARKETPLACE", "12"))))
+HISTORY_THRESHOLD = max(0.10, min(0.80, float(os.getenv("HISTORY_DROP_THRESHOLD", "0.30"))))
+MIN_DEAL_SCORE = max(65, min(95, int(os.getenv("MIN_DEAL_SCORE", "78"))))
+MAX_ALERTS_PER_DAY = max(1, int(os.getenv("MAX_ALERTS_PER_DAY", "30")))
+SEARCH_WORKERS = max(1, min(3, int(os.getenv("SEARCH_WORKERS", "2"))))
 
 logging.basicConfig(level=logging.INFO)
 log = logging.getLogger("dealbot")
@@ -65,19 +42,16 @@ scan_wakeup = asyncio.Event()
 async def start(message: Message):
     added = db.subscribe(message.chat.id)
     scan_wakeup.set()
-
     status = (
-        "Подписка включена. Я сам ищу большие скидки на Ozon "
-        "по основным категориям и пришлю карточки сюда."
-        if added
-        else
-        "Подписка уже активна. Я сам ищу скидки и пришлю найденные товары сюда."
+        "Подписка включена. Я непрерывно исследую каталог Ozon, "
+        "нахожу новые направления по брендам и моделям и присылаю проверенные ценовые аномалии."
+        if added else
+        "Подписка уже активна. Продолжаю исследовать Ozon и присылать проверенные находки."
     )
-
     await message.answer(
         "Привет! " + status + "\n\n"
-        f"Проверка проходит примерно раз в {INTERVAL} мин. "
-        "Остановить сообщения: /stop."
+        "Поиск работает постоянно, без фиксированного списка категорий. "
+        "Остановить уведомления: /stop."
     )
 
 
@@ -85,8 +59,7 @@ async def start(message: Message):
 async def stop_alerts(message: Message):
     removed = db.unsubscribe(message.chat.id)
     await message.answer(
-        "Отключил уведомления."
-        if removed
+        "Отключил уведомления." if removed
         else "Уведомления уже отключены. Чтобы включить: /start"
     )
 
@@ -96,396 +69,169 @@ async def ignore_all_other_messages(message: Message):
     return
 
 
-def _card(product: dict, reason: str) -> tuple[str, InlineKeyboardMarkup]:
+def _card(product: dict, reason: str, score: int):
     safe_name = html.escape(product["name"][:180])
     price = f"{product['price_value']:,.0f}".replace(",", " ")
-
-    old_price = product.get("old_price_value")
-    old_line = ""
-
-    if old_price and old_price > product["price_value"]:
-        old = f"{old_price:,.0f}".replace(",", " ")
-        old_line = f"  <s>{old} ₽</s>"
-
     text = (
-        f"🔥 <b>Выгодная находка · {html.escape(product['marketplace'])}</b>\n\n"
+        f"🔥 <b>Возможная выгодная находка · Ozon</b>\n\n"
         f"<b>{safe_name}</b>\n\n"
-        f"💰 <b>{price} ₽</b>{old_line}\n"
-        f"📉 {html.escape(reason)}"
+        f"💰 <b>{price} ₽</b>\n"
+        f"📉 {html.escape(reason)}\n"
+        f"🎯 Надёжность отбора: {score}/100"
     )
-
-    keyboard = InlineKeyboardMarkup(
-        inline_keyboard=[[
-            InlineKeyboardButton(
-                text=f"Открыть на {product['marketplace']}",
-                url=product["link"],
-            )
-        ]]
-    )
-
+    keyboard = InlineKeyboardMarkup(inline_keyboard=[[
+        InlineKeyboardButton(text="Открыть на Ozon", url=product["link"])
+    ]])
     return text, keyboard
 
 
-async def _download_photo(url: str) -> BufferedInputFile:
-    parsed = urlsplit(url)
-    host = (parsed.hostname or "").lower()
-
-    trusted = (
-        host == "ozon.ru"
-        or host.endswith(".ozon.ru")
-        or host == "ozone.ru"
-        or host.endswith(".ozone.ru")
-    )
-
-    if parsed.scheme != "https" or not trusted:
-        raise ValueError("untrusted image host")
-
-    timeout = aiohttp.ClientTimeout(total=12)
-
-    headers = {
-        "User-Agent": (
-            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-            "AppleWebKit/537.36 Chrome/131.0 Safari/537.36"
-        ),
-        "Referer": "https://www.ozon.ru/",
-    }
-
-    async with aiohttp.ClientSession(
-        timeout=timeout,
-        headers=headers,
-    ) as session:
-        async with session.get(
-            url,
-            allow_redirects=True,
-        ) as response:
-            response.raise_for_status()
-
-            final_host = (
-                urlsplit(str(response.url)).hostname or ""
-            ).lower()
-
-            if not (
-                final_host.endswith(".ozon.ru")
-                or final_host.endswith(".ozone.ru")
-            ):
-                raise ValueError("image redirected to an untrusted host")
-
-            mime = (
-                response.headers.get("Content-Type", "")
-                .split(";", 1)[0]
-                .lower()
-            )
-
-            if not mime.startswith("image/"):
-                raise ValueError("marketplace did not return an image")
-
-            if response.content_length and response.content_length > 10_000_000:
-                raise ValueError("image is too large")
-
-            data = await response.read()
-
-            if not data or len(data) > 10_000_000:
-                raise ValueError("image is empty or too large")
-
-            extension = mimetypes.guess_extension(mime) or ".jpg"
-
-            return BufferedInputFile(
-                data,
-                filename=f"product{extension}",
-            )
+def _detail_title_matches(product: dict, details: dict) -> bool:
+    detail_name = str(details.get("name") or "").strip()
+    if not detail_name:
+        return False
+    detail_product = {"name": detail_name}
+    match = compare_products(product, detail_product)
+    return bool(match["comparable"] and match["confidence"] >= 0.78)
 
 
-async def _scan_cycle(bot: Bot):
+async def _send_deal(bot: Bot, product: dict, reason: str, score: int) -> int:
     subscribers = db.all_subscribers()
-
     if not subscribers:
-        log.info("No subscribers; skipping automatic scan")
-        return
-
-    log.info(
-        "Starting automatic scan for %d subscribers",
-        len(subscribers),
-    )
-
-    try:
-        products_by_query, errors = await asyncio.to_thread(
-            scan_queries,
-            AUTO_SEARCHES,
-            RESULTS_LIMIT,
-        )
-
-        if errors:
-            log.warning("Scan errors: %s", "; ".join(errors))
-
-        candidates = {}
-        seen_links = set()
-
-        for query, products in products_by_query.items():
-            for product in products:
-                if product["link"] in seen_links:
-                    continue
-
-                seen_links.add(product["link"])
-
-                previous = db.observe_price(
-                    product["link"],
-                    product["price_value"],
-                )
-
-                peer_reason = peer_price_anomaly(
-                    product,
-                    products,
-                    PEER_THRESHOLD,
-                )
-
-                history_reason = history_anomaly(
-                    product["price_value"],
-                    previous,
-                    HISTORY_THRESHOLD,
-                )
-
-                listed_reason = listed_discount_anomaly(
-                    product["price_value"],
-                    product.get("old_price_value"),
-                    LISTED_THRESHOLD,
-                )
-
-                reason = peer_reason or history_reason
-
-                if (
-                    not reason
-                    and listed_reason
-                    and not has_close_price_peers(product, products)
-                ):
-                    reason = listed_reason
-
-                if (
-                    not reason
-                    or not db.should_send_alert(
-                        product["link"],
-                        product["price_value"],
-                    )
-                ):
-                    continue
-
-                score = 0.0
-                old_price = product.get("old_price_value")
-
-                if old_price and old_price > product["price_value"]:
-                    score = 1 - product["price_value"] / old_price
-
-                match = re.search(r"(\d+)%", reason)
-
-                if match:
-                    score = max(
-                        score,
-                        int(match.group(1)) / 100,
-                    )
-
-                candidates[product["link"]] = (
-                    score,
-                    QUERY_GROUP.get(query, "Другое"),
-                    product,
-                    reason,
-                )
-
-        ordered = sorted(
-            candidates.values(),
-            key=lambda item: item[0],
-            reverse=True,
-        )
-
-        ranked = []
-
-        for candidate in ordered:
-            product = candidate[2]
-
-            duplicate = any(
-                title_similarity(
-                    product["name"],
-                    kept[2]["name"],
-                ) >= 0.84
-                and abs(
-                    product["price_value"] - kept[2]["price_value"]
-                )
-                <= max(
-                    product["price_value"],
-                    kept[2]["price_value"],
-                ) * 0.07
-                for kept in ranked
+        return 0
+    text, markup = _card(product, reason, score)
+    delivered = 0
+    for chat_id in subscribers:
+        if db.deliveries_in_last_hours(chat_id, 24) >= MAX_ALERTS_PER_DAY:
+            continue
+        try:
+            await bot.send_message(
+                chat_id,
+                text + f"\n\n{html.escape(product['link'])}",
+                reply_markup=markup,
+                link_preview_options=LinkPreviewOptions(
+                    is_disabled=False,
+                    prefer_large_media=True,
+                ),
             )
+            db.record_delivery(chat_id, product["link"])
+            delivered += 1
+            log.info("Sent Ozon deal to chat %s: %s", chat_id, product["name"])
+            await asyncio.sleep(0.8)
+        except Exception:
+            log.exception("Could not send deal to chat %s", chat_id)
+    if delivered:
+        db.mark_alerted(product["link"], product["price_value"])
+    return delivered
 
-            if not duplicate:
-                ranked.append(candidate)
 
-        # Больше нет ограничения количества товаров.
-        # Отправляем все товары, прошедшие фильтрацию.
-        selected = ranked
+async def _process_batch(bot: Bot, query: str, products: list[dict], error: str | None):
+    """Handle each completed Ozon search immediately while other workers continue."""
+    if error:
+        log.warning("Search '%s' returned error: %s", query, error)
+    if not products:
+        return 0.0
 
-        total_sent = 0
+    sent_links = set()
+    qualified = 0
+    reward = 0.0
 
-        for chat_id in subscribers:
-            for _, _, product, reason in selected:
-                text, markup = _card(product, reason)
-                delivered = False
+    for product in products:
+        link = product.get("link")
+        price = product.get("price_value")
+        if not link or not price or link in sent_links:
+            continue
+        sent_links.add(link)
 
-                try:
-                    if product.get("image_url"):
-                        photo = await _download_photo(
-                            product["image_url"]
-                        )
+        previous = db.observe_price(link, float(price))
+        peer_deal = evaluate_peer_deal(product, products)
+        history_reason = history_anomaly(float(price), previous, HISTORY_THRESHOLD)
 
-                        await bot.send_photo(
-                            chat_id,
-                            photo=photo,
-                            caption=text,
-                            reply_markup=markup,
-                        )
-                    else:
-                        await bot.send_message(
-                            chat_id,
-                            text + f"\n\n{html.escape(product['link'])}",
-                            reply_markup=markup,
-                            link_preview_options=LinkPreviewOptions(
-                                is_disabled=False,
-                                prefer_large_media=True,
-                            ),
-                        )
+        peer_qualified = bool(peer_deal and peer_deal["score"] >= MIN_DEAL_SCORE)
+        if not peer_qualified and not history_reason:
+            continue
+        if not db.should_send_alert(link, float(price)):
+            continue
 
-                    delivered = True
+        score = peer_deal["score"] if peer_qualified else 80
+        reason = peer_deal["reason"] if peer_qualified else history_reason
 
-                except Exception:
-                    if product.get("image_url"):
-                        log.warning(
-                            "Product photo unavailable; sending text card"
-                        )
+        # Full product page is a final identity check, not a source of advertised discounts.
+        try:
+            details = await asyncio.to_thread(fetch_product_details, product)
+        except Exception as exc:
+            log.warning("Could not verify candidate '%s': %s", product.get("name"), type(exc).__name__)
+            continue
+        if not _detail_title_matches(product, details):
+            log.info("Candidate rejected after detail verification: %s", product.get("name"))
+            continue
 
-                        try:
-                            await bot.send_message(
-                                chat_id,
-                                text + f"\n\n{html.escape(product['link'])}",
-                                reply_markup=markup,
-                                link_preview_options=LinkPreviewOptions(
-                                    is_disabled=False,
-                                    prefer_large_media=True,
-                                ),
-                            )
-                            delivered = True
+        product["name"] = details.get("name") or product["name"]
+        product["characteristics"] = details.get("characteristics") or {}
+        delivered = await _send_deal(bot, product, reason, score)
+        if delivered:
+            qualified += 1
+            reward += min(2.5, score / 40)
 
-                        except Exception:
-                            log.exception(
-                                "Could not send deal card to chat %s",
-                                chat_id,
-                            )
-                    else:
-                        log.exception(
-                            "Could not send deal card to chat %s",
-                            chat_id,
-                        )
-
-                if delivered:
-                    db.mark_alerted(
-                        product["link"],
-                        product["price_value"],
-                    )
-
-                    db.record_delivery(
-                        chat_id,
-                        product["link"],
-                    )
-
-                    total_sent += 1
-
-                    log.info(
-                        "Sent product to chat %s: %s",
-                        chat_id,
-                        product["name"],
-                    )
-
-                    # Небольшая пауза для защиты от ограничения Telegram.
-                    await asyncio.sleep(1)
-
-        log.info(
-            "Qualified deals after similarity filtering: %d; sent: %d",
-            len(ranked),
-            total_sent,
-        )
-
-    except Exception:
-        log.exception("Automatic scan cycle failed")
+    return min(5.0, reward)
 
 
 async def _scheduler(bot: Bot):
+    last_cleanup = time.monotonic()
     while True:
-        cycle_started = time.monotonic()
-
-        await _scan_cycle(bot)
-
-        wait_seconds = max(
-            0,
-            INTERVAL * 60 - (time.monotonic() - cycle_started),
-        )
-
-        if wait_seconds == 0:
-            log.warning(
-                "Scan took longer than %d minutes; "
-                "starting the next cycle without overlap",
-                INTERVAL,
-            )
+        if not db.all_subscribers():
+            try:
+                await asyncio.wait_for(scan_wakeup.wait(), timeout=30)
+            except asyncio.TimeoutError:
+                pass
+            scan_wakeup.clear()
             continue
 
         try:
-            await asyncio.wait_for(
-                scan_wakeup.wait(),
-                timeout=wait_seconds,
+            log.info("Starting continuous Ozon random walk (%d search workers)", SEARCH_WORKERS)
+            await random_walk(
+                lambda query, products, error: _process_batch(bot, query, products, error),
+                workers=SEARCH_WORKERS,
+                limit=RESULTS_LIMIT,
             )
-        except asyncio.TimeoutError:
-            pass
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            log.exception("Random-walk scanner stopped unexpectedly; retrying")
+            await asyncio.sleep(10)
 
-        scan_wakeup.clear()
+        if time.monotonic() - last_cleanup >= 6 * 60 * 60:
+            try:
+                db.cleanup_storage()
+                last_cleanup = time.monotonic()
+            except Exception:
+                log.exception("Storage cleanup failed")
 
 
 async def main():
     if not TOKEN:
-        raise SystemExit(
-            "Укажи BOT_TOKEN в файле .env (токен выдаёт @BotFather)"
-        )
+        raise SystemExit("Укажи BOT_TOKEN в файле .env (токен выдаёт @BotFather)")
 
     db.init_db()
+    db.cleanup_storage()
 
-    bot = Bot(
-        TOKEN,
-        default=DefaultBotProperties(
-            parse_mode=ParseMode.HTML,
-        ),
-    )
-
+    bot = Bot(TOKEN, default=DefaultBotProperties(parse_mode=ParseMode.HTML))
     try:
         await bot.set_my_commands([
-            BotCommand(
-                command="start",
-                description="Включить уведомления",
-            ),
-            BotCommand(
-                command="stop",
-                description="Отключить уведомления",
-            ),
+            BotCommand(command="start", description="Включить уведомления"),
+            BotCommand(command="stop", description="Отключить уведомления"),
         ])
     except Exception:
         log.warning("Could not update the bot command menu")
 
     scheduler = asyncio.create_task(_scheduler(bot))
-
     try:
         await dp.start_polling(bot)
     finally:
         scheduler.cancel()
-
         try:
             await scheduler
         except asyncio.CancelledError:
             pass
-
         await bot.session.close()
 
 
