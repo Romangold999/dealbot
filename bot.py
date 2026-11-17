@@ -149,7 +149,7 @@ async def _process_batch(bot: Bot, details_worker: DetailsWorker, query: str, pr
             continue
         sent_links.add(link)
 
-        previous = db.price_history(link, days=3)
+        previous = db.observe_price(link, float(price))
         initial_peer = evaluate_peer_deal(product, products)
         initial_history = history_anomaly(float(price), previous, HISTORY_THRESHOLD)
         if not (initial_peer and initial_peer["score"] >= MIN_DEAL_SCORE) and not initial_history:
