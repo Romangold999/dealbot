@@ -98,11 +98,15 @@ def _derive_directions(products, parent_query: str, max_new: int = 24):
             continue
 
         # Model codes are especially useful exploration anchors.
-        model_positions = [i for i, token in enumerate(tokens) if re.search(r"\\d", token)]
+        model_positions = [
+            i for i, token in enumerate(tokens)
+            if re.search(r"\d", token)
+            and re.search(r"[a-zа-я]", token)
+            and not re.fullmatch(r"\d+(?:gb|гб|tb|тб|mb|мб)", token)
+        ]
         for i in model_positions:
             if i > 0:
                 candidates.append(" ".join(tokens[max(0, i - 2):i + 1]))
-            candidates.append(tokens[i])
 
         # Brand/model and adjacent product phrases; avoid generating one-word noise.
         for i in range(min(len(tokens) - 1, 5)):
@@ -110,7 +114,6 @@ def _derive_directions(products, parent_query: str, max_new: int = 24):
         if len(tokens) >= 3:
             candidates.append(" ".join(tokens[:3]))
 
-    parent = set(re.findall(r"[a-zа-яё0-9]+", parent_query.lower().replace("ё", "е")))
     unique = []
     seen = set()
     for phrase in candidates:
@@ -119,7 +122,7 @@ def _derive_directions(products, parent_query: str, max_new: int = 24):
         words = set(key.split())
         if len(phrase) < 3 or len(phrase) > 70 or key in seen:
             continue
-        if key == parent_query.casefold() or (len(words) == 1 and not re.search(r"\\d", phrase)):
+        if key == parent_query.casefold() or (len(words) == 1 and not re.search(r"\d", phrase)):
             continue
         seen.add(key)
         unique.append(phrase)
