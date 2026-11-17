@@ -23,8 +23,8 @@ _CONDITION = {
     "used": {"б/у", "бу", "уцененный", "уценённый", "восстановленный", "refurbished"},
     "new": {"новый", "новая", "новое", "новые", "new"},
 }
-_CAPACITY = re.compile(r"(?<![a-zа-я0-9])(\\d+(?:[.,]\\d+)?)\\s*(tb|тб|gb|гб|mb|мб|г\\s*\\.?\\s*б)(?![a-zа-я])", re.I)
-_SIZE = re.compile(r"(?<![a-zа-я0-9])(\\d+(?:[.,]\\d+)?)\\s*(дюйм\\w*|inch|in)(?![a-zа-я])", re.I)
+_CAPACITY = re.compile(r"(?<![a-zа-я0-9])(\d+(?:[.,]\d+)?)\s*(tb|тб|gb|гб|mb|мб|г\s*\.?\s*б)(?![a-zа-я])", re.I)
+_SIZE = re.compile(r"(?<![a-zа-я0-9])(\d+(?:[.,]\d+)?)\s*(дюйм\w*|inch|in)(?![a-zа-я])", re.I)
 
 
 def _tokens(value):
@@ -32,7 +32,7 @@ def _tokens(value):
 
 
 def _condition(name):
-    tokens = set(_tokens(name))
+    tokens = set(_tokens(str(name or "").replace("б/у", "бу")))
     found = {kind for kind, words in _CONDITION.items() if tokens & words}
     if len(found) > 1:
         return "conflict"
@@ -42,7 +42,7 @@ def _condition(name):
 def _capacities(name):
     text = str(name or "").lower().replace(",", ".")
     return {
-        (m.group(1), re.sub(r"\\s+", "", m.group(2).lower()))
+        (m.group(1), re.sub(r"\s+", "", m.group(2).lower()))
         for m in _CAPACITY.finditer(text)
     }
 
@@ -58,7 +58,7 @@ def _sizes(name):
 def _model_tokens(tokens):
     return {
         t for t in tokens
-        if re.search(r"\\d", t) and not re.fullmatch(r"\\d{1,4}", t)
+        if re.search(r"\d", t) and not re.fullmatch(r"\d{1,4}", t)
     }
 
 
