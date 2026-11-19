@@ -1,6 +1,8 @@
 name: Dealbot runner
 
 on:
+  push:
+    branches: [dealbot-2.0-dev]
   workflow_dispatch:
 
 permissions:
