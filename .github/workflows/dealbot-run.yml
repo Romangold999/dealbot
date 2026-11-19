@@ -56,9 +56,13 @@ jobs:
       - name: Verify bot configuration without printing secrets
         run: |
           python - <<'PY'
+          from pathlib import Path
           from dotenv import load_dotenv
           import os
-          load_dotenv()
+          env_file = Path.cwd() / ".env"
+          if not env_file.is_file():
+              raise SystemExit(".env file is missing from the checked-out project")
+          load_dotenv(dotenv_path=env_file)
           token = os.getenv("BOT_TOKEN", "").strip()
           if not token:
               raise SystemExit("BOT_TOKEN is not available to the application")
