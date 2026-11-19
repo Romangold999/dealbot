@@ -1,0 +1,54 @@
+name: Validate original Ozon search encoding
+
+on:
+  push:
+    branches: [fix/original-ozon-search-queries]
+    paths:
+      - "scanner.py"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  validate-search-seeds:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Validate all search seed strings without starting the bot
+        run: |
+          python - <<'PY'
+          import ast
+          import re
+          from pathlib import Path
+
+          source = Path("scanner.py").read_text(encoding="utf-8-sig")
+          tree = ast.parse(source)
+          groups_node = next(
+              node.value for node in tree.body
+              if isinstance(node, ast.Assign)
+              and any(isinstance(t, ast.Name) and t.id == "AUTO_SEARCH_GROUPS" for t in node.targets)
+          )
+          groups = ast.literal_eval(groups_node)
+
+          def repair(value):
+              return value.encode("cp1251").decode("utf-8")
+
+          repaired = {
+              repair(group): tuple(repair(query) for query in queries)
+              for group, queries in groups.items()
+          }
+          assert len(repaired) == 14, f"Expected 14 categories, got {len(repaired)}"
+          total = sum(map(len, repaired.values()))
+          assert total > 0, "No search phrases found"
+          all_text = list(repaired) + [q for qs in repaired.values() for q in qs]
+          bad = [s for s in all_text if re.search(r"(?:Р[°µє]|С[Ѓ‚„‡])", s)]
+          assert not bad, f"Still-corrupted strings: {bad[:5]}"
+          assert "Электроника" in repaired, "Russian category text was not restored"
+          assert "смартфоны" in repaired["Электроника"], "Smartphone query was not restored"
+          print(f"PASS: {len(repaired)} categories, {total} valid Russian search phrases")
+          print("PASS: sample query =", repaired["Электроника"][0])
+          PY
