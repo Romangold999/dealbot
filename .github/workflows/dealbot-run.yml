@@ -22,17 +22,17 @@ jobs:
       HISTORY_DROP_THRESHOLD: "0.30"
       MAX_ALERTS_PER_DAY: "30"
     steps:
+      - name: Check out Dealbot 2.0
+        uses: actions/checkout@v4
+        with:
+          ref: dealbot-2.0-dev
+
       - name: Check required configuration
         run: |
           if [ -z "$BOT_TOKEN" ]; then
             echo "::error::Repository variable BOT_TOKEN is missing. Add it in Settings > Secrets and variables > Actions > Variables."
             exit 1
           fi
-
-      - name: Check out Dealbot 2.0
-        uses: actions/checkout@v4
-        with:
-          ref: dealbot-2.0-dev
 
       - name: Set up Python
         uses: actions/setup-python@v5
@@ -48,21 +48,20 @@ jobs:
       - name: Install Chromium for Playwright
         run: playwright install --with-deps chromium
 
-      - name: Restore previous database
-        uses: actions/download-artifact@v4
-        continue-on-error: true
+      - name: Restore Dealbot database cache
+        uses: actions/cache/restore@v4
         with:
-          name: dealbot-database
-          path: .
+          path: deals.db
+          key: dealbot-db-${{ github.run_id }}-${{ github.run_attempt }}
+          restore-keys: |
+            dealbot-db-
 
       - name: Run Dealbot
         run: python -u bot.py
 
-      - name: Save database
+      - name: Save Dealbot database cache
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/cache/save@v4
         with:
-          name: dealbot-database
           path: deals.db
-          if-no-files-found: ignore
-          retention-days: 7
+          key: dealbot-db-${{ github.run_id }}-${{ github.run_attempt }}
