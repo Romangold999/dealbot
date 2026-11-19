@@ -71,6 +71,19 @@ AUTO_SEARCH_GROUPS = {
         "РІРѕРґРѕРЅР°РіСЂРµРІР°С‚РµР»Рё", "РґРІРµСЂРЅР°СЏ С„СѓСЂРЅРёС‚СѓСЂР°", "Р·Р°РјРєРё",
     ),
 }
+def _repair_mojibake(value: str) -> str:
+    """Restore Russian text accidentally decoded as Windows-1251 instead of UTF-8."""
+    try:
+        return value.encode("cp1251").decode("utf-8")
+    except (UnicodeEncodeError, UnicodeDecodeError):
+        return value
+
+
+# Repair the legacy search seed strings before they are sent to Ozon.
+AUTO_SEARCH_GROUPS = {
+    _repair_mojibake(group): tuple(_repair_mojibake(query) for query in queries)
+    for group, queries in AUTO_SEARCH_GROUPS.items()
+}
 AUTO_SEARCHES = tuple(query for queries in AUTO_SEARCH_GROUPS.values() for query in queries)
 QUERY_GROUP = {query: group for group, queries in AUTO_SEARCH_GROUPS.items() for query in queries}
 
