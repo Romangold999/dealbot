@@ -1,0 +1,62 @@
+name: Live Ozon search smoke test
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [fix/original-ozon-search-queries]
+    paths:
+      - ".github/workflows/ozon-search-smoke-test.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  ozon-search-smoke-test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+      - name: Install parser dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+      - name: Install Chromium
+        run: playwright install --with-deps chromium
+      - name: Test real Ozon search using repaired Russian queries
+        run: |
+          python - <<'PY'
+          import logging
+          from scanner import AUTO_SEARCH_GROUPS, _ozon_items
+          from parsers import ozon
+
+          logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
+          samples = []
+          for group in ("Электроника", "Бытовая техника", "Дом и мебель"):
+              queries = AUTO_SEARCH_GROUPS.get(group, ())
+              if queries:
+                  samples.append((group, queries[0]))
+          if len(samples) < 3:
+              raise SystemExit(f"Not enough sample categories: {samples}")
+
+          session = ozon.OzonSession()
+          passed = 0
+          try:
+              for group, query in samples:
+                  print(f"\nTEST {group}: {query}", flush=True)
+                  items = _ozon_items(session, query, 3)
+                  print(f"RESULT: {len(items)} products", flush=True)
+                  for item in items[:3]:
+                      print(f"- {item['name']} | {item['price_value']} RUB | {item['link']}", flush=True)
+                  if items:
+                      passed += 1
+          finally:
+              session.shutdown()
+
+          print(f"\nSUMMARY: {passed}/{len(samples)} queries returned parsed products", flush=True)
+          if passed == 0:
+              raise SystemExit("Ozon search returned no parsed products for any sample query")
+          PY
