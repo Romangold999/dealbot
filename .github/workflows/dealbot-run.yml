@@ -3,6 +3,8 @@ name: Dealbot runner
 on:
   push:
     branches: [dealbot-2.0-dev]
+    paths:
+      - ".github/workflows/dealbot-run.yml"
   workflow_dispatch:
 
 permissions:
@@ -17,7 +19,6 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 350
     env:
-      BOT_TOKEN: ${{ vars.BOT_TOKEN }}
       RESULTS_PER_MARKETPLACE: "12"
       SEARCH_WORKERS: "2"
       MIN_DEAL_SCORE: "78"
@@ -28,13 +29,6 @@ jobs:
         uses: actions/checkout@v4
         with:
           ref: dealbot-2.0-dev
-
-      - name: Check required configuration
-        run: |
-          if [ -z "$BOT_TOKEN" ]; then
-            echo "::error::Repository variable BOT_TOKEN is missing. Add it in Settings > Secrets and variables > Actions > Variables."
-            exit 1
-          fi
 
       - name: Set up Python
         uses: actions/setup-python@v5
@@ -57,6 +51,18 @@ jobs:
           key: dealbot-db-${{ github.run_id }}-${{ github.run_attempt }}
           restore-keys: |
             dealbot-db-
+
+      - name: Verify bot configuration without printing secrets
+        run: |
+          python - <<'PY'
+          from dotenv import load_dotenv
+          import os
+          load_dotenv()
+          token = os.getenv("BOT_TOKEN", "").strip()
+          if not token:
+              raise SystemExit("BOT_TOKEN is not available to the application")
+          print("BOT_TOKEN loaded: YES (value hidden)")
+          PY
 
       - name: Run Dealbot
         run: python -u bot.py
