@@ -5,6 +5,7 @@ on:
     branches: [dealbot-2.0-dev]
     paths:
       - ".github/workflows/dealbot-run.yml"
+      - "bot.py"
   workflow_dispatch:
 
 permissions:
