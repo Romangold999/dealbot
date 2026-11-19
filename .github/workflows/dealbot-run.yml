@@ -1,0 +1,68 @@
+name: Dealbot runner
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: dealbot-runner
+  cancel-in-progress: false
+
+jobs:
+  run-bot:
+    runs-on: ubuntu-latest
+    timeout-minutes: 350
+    env:
+      BOT_TOKEN: ${{ vars.BOT_TOKEN }}
+      RESULTS_PER_MARKETPLACE: "12"
+      SEARCH_WORKERS: "2"
+      MIN_DEAL_SCORE: "78"
+      HISTORY_DROP_THRESHOLD: "0.30"
+      MAX_ALERTS_PER_DAY: "30"
+    steps:
+      - name: Check required configuration
+        run: |
+          if [ -z "$BOT_TOKEN" ]; then
+            echo "::error::Repository variable BOT_TOKEN is missing. Add it in Settings > Secrets and variables > Actions > Variables."
+            exit 1
+          fi
+
+      - name: Check out Dealbot 2.0
+        uses: actions/checkout@v4
+        with:
+          ref: dealbot-2.0-dev
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      - name: Install Python dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Install Chromium for Playwright
+        run: playwright install --with-deps chromium
+
+      - name: Restore previous database
+        uses: actions/download-artifact@v4
+        continue-on-error: true
+        with:
+          name: dealbot-database
+          path: .
+
+      - name: Run Dealbot
+        run: python -u bot.py
+
+      - name: Save database
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: dealbot-database
+          path: deals.db
+          if-no-files-found: ignore
+          retention-days: 7
