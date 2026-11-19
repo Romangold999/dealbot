@@ -3,6 +3,7 @@ import html
 import logging
 import os
 import re
+from pathlib import Path
 
 from aiogram import Bot, Dispatcher
 from aiogram.client.default import DefaultBotProperties
@@ -21,7 +22,7 @@ import db
 from detector import compare_products, evaluate_peer_deal, history_anomaly
 from scanner import DetailsWorker, random_walk
 
-load_dotenv()
+load_dotenv(dotenv_path=Path(__file__).with_name(".env"))
 
 TOKEN = os.getenv("BOT_TOKEN", "").strip()
 RESULTS_LIMIT = max(3, min(30, int(os.getenv("RESULTS_PER_MARKETPLACE", "12"))))
