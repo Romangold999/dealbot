@@ -60,3 +60,5 @@ jobs:
           if passed == 0:
               raise SystemExit("Ozon search returned no parsed products for any sample query")
           PY
+
+# Trigger isolated live search validation.
