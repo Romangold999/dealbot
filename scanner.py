@@ -176,3 +176,5 @@ def scan_query(query: str, limit: int = 12):
     results, errors = scan_queries((query,), limit)
     return results[query], errors
 
+
+# Search seed encoding is validated in the dedicated GitHub Actions workflow.
